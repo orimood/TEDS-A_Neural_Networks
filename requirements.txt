@@ -1,0 +1,35 @@
+# Core packages
+pandas>=1.3.0
+numpy>=1.21.0
+scikit-learn>=1.0
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# PyTorch ecosystem
+torch>=1.12.0
+pytorch-tabnet>=4.0
+rtdl-revisiting-models>=0.0.8
+
+# TensorFlow ecosystem
+tensorflow>=2.9.0
+
+# Imbalanced data handling
+imbalanced-learn>=0.9.0
+
+# Gradient boosting
+lightgbm>=3.3.0
+
+# Hyperparameter optimization
+optuna>=3.0.0
+
+# Jupyter notebooks
+jupyter
+
+# Optional: tqdm for progress bars
+tqdm>=4.64.0
+category_encoders
+xgboost
+torchmetrics
+joblib
+shap
+lime
