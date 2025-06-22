@@ -33,7 +33,6 @@ TEDS_Substance_Prediction/
 ├── main.py                         # Main script to run experiments
 ├── requirements.txt                # Python package dependencies
 ├── README.md                       # This file
-└── .gitignore                      # Specifies intentionally untracked files
 ```
 
 ## Setup Instructions
