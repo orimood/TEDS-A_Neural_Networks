@@ -86,7 +86,7 @@ def _objective_optuna_ft(trial):
     else:
         loss_fn = lambda logits, y: focal_loss_ft(logits, y, gamma=2.0, weight=_BASE_CLASS_WEIGHTS_FOR_OPTUNA)
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=_SEED_FOR_OPTUNA) # Your notebook uses 5
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=_SEED_FOR_OPTUNA)
     fold_accs = []
 
     for tr_idx, va_idx in cv.split(_X_TRAIN_FOR_OPTUNA_CV, _Y_TRAIN_FOR_OPTUNA_CV):
