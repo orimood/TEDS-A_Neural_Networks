@@ -20,7 +20,7 @@ import time
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- Dataset Wrapper (from your script) ---
+# --- Dataset Wrapper ---
 class CatOnlyDataset(Dataset):
     def __init__(self, X_cat_np, y_np): # Expect NumPy arrays
         self.X_cat = torch.as_tensor(X_cat_np, dtype=torch.long)
@@ -28,7 +28,7 @@ class CatOnlyDataset(Dataset):
     def __len__(self):          return self.y.size(0)
     def __getitem__(self, idx): return self.X_cat[idx], self.y[idx]
 
-# --- Focal Loss (from your script) ---
+# --- Focal Loss ---
 def focal_loss_ft(logits, targets, gamma=2.0, weight=None):
     log_probs = F.log_softmax(logits, dim=1)
     probs     = torch.exp(log_probs)
