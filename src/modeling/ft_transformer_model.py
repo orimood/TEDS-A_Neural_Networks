@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
-from rtdl_revisiting_models import FTTransformer # Assuming this library is installed
+from rtdl_revisiting_models import FTTransformer
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -17,8 +17,7 @@ from copy import deepcopy
 import time
 
 # --- Global settings / Constants for this module ---
-# SEED should ideally be passed from main.py for consistency
-# For this example, let's assume it's passed as an argument where needed.
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- Dataset Wrapper (from your script) ---
@@ -33,15 +32,14 @@ class CatOnlyDataset(Dataset):
 def focal_loss_ft(logits, targets, gamma=2.0, weight=None):
     log_probs = F.log_softmax(logits, dim=1)
     probs     = torch.exp(log_probs)
-    # Ensure targets are on the same device as logits for indexing
     tgt_log_p = log_probs[torch.arange(len(targets), device=targets.device), targets]
     tgt_p     = probs[torch.arange(len(targets), device=targets.device), targets]
     loss      = -((1.0 - tgt_p) ** gamma) * tgt_log_p
     if weight is not None:
-        loss = loss * weight[targets] # Ensure weight is also on the correct device
+        loss = loss * weight[targets]
     return loss.mean()
 
-# --- Epoch Loop (from your script) ---
+# --- Epoch Loop ---
 def run_epoch_ft(model, loader, loss_fn, optimizer=None, device=DEVICE):
     train_mode = optimizer is not None
     model.train() if train_mode else model.eval()
@@ -59,7 +57,7 @@ def run_epoch_ft(model, loader, loss_fn, optimizer=None, device=DEVICE):
         total    += y_batch.size(0)
     return loss_sum / total, correct / total
 
-# --- Global-like variables for Optuna objective (Set by the main training function) ---
+# --- Global variables for Optuna objective ---
 _X_TRAIN_FOR_OPTUNA_CV = None
 _Y_TRAIN_FOR_OPTUNA_CV = None
 _CAT_CARDINALITIES_FOR_OPTUNA = None
@@ -116,10 +114,10 @@ def _objective_optuna_ft(trial):
         ).to(_DEVICE_FOR_OPTUNA)
 
         opt = torch.optim.AdamW(model.make_parameter_groups(), lr=lr, weight_decay=1e-2)
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=20) # T_max from your notebook for CV
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=20)
 
-        best_fold_val_acc, patience_count, wait_count = 0.0, 10, 0 # Patience from your notebook
-        for epoch in range(100): # Max epochs from your notebook
+        best_fold_val_acc, patience_count, wait_count = 0.0, 10, 0
+        for epoch in range(100):
             run_epoch_ft(model, dl_tr, loss_fn, opt, device=_DEVICE_FOR_OPTUNA)
             sched.step()
             _, val_acc_epoch = run_epoch_ft(model, dl_va, loss_fn, device=_DEVICE_FOR_OPTUNA)
@@ -135,12 +133,12 @@ def _objective_optuna_ft(trial):
 
 
 def train_and_evaluate_ft_transformer(
-    X_train_cat_np, y_train_np, X_test_cat_np, y_test_np, # These are already label encoded
-    cat_cardinalities_list, num_target_classes, feature_names_list, target_encoder_classes, # For plotting/info
+    X_train_cat_np, y_train_np, X_test_cat_np, y_test_np,
+    cat_cardinalities_list, num_target_classes, feature_names_list, target_encoder_classes,
     seed=42,
-    optuna_n_trials=16, # From your notebook
-    optuna_timeout_hours=1, # From your notebook
-    final_model_epochs=50 # From your notebook
+    optuna_n_trials=16,
+    optuna_timeout_hours=1,
+    final_model_epochs=50
     ):
     """
     Main function to run the FT-Transformer experiment: tunes with Optuna,
@@ -183,7 +181,7 @@ def train_and_evaluate_ft_transformer(
     best_hyperparams = study.best_params
     print("Best hyper-parameters from Optuna:", best_hyperparams)
 
-    # --- Train Final Model with Best Hyperparameters (Cell 4 logic) ---
+    # --- Train Final Model with Best Hyperparameters ---
     print("\n--- Training Final FT-Transformer model with best parameters ---")
     
     if best_hyperparams["loss_type"] == "ce":
@@ -202,7 +200,7 @@ def train_and_evaluate_ft_transformer(
     ).to(DEVICE)
 
     final_opt = torch.optim.AdamW(final_model.make_parameter_groups(), lr=best_hyperparams["lr"], weight_decay=1e-2)
-    final_sched = torch.optim.lr_scheduler.CosineAnnealingLR(final_opt, T_max=20) # T_max from notebook cell 4 (fixed 20, not final_model_epochs)
+    final_sched = torch.optim.lr_scheduler.CosineAnnealingLR(final_opt, T_max=20)
 
     counts_final_train = np.bincount(y_train_np)
     weights_final_train = 1.0 / counts_final_train[y_train_np]
@@ -214,8 +212,8 @@ def train_and_evaluate_ft_transformer(
                                     sampler=sampler_final_train)
     
     final_model_train_start_time = time.time()
-    for epoch in range(final_model_epochs): # Use final_model_epochs
-        if (epoch + 1) % 10 == 0 or epoch == 0: # Print every 10 epochs
+    for epoch in range(final_model_epochs):
+        if (epoch + 1) % 10 == 0 or epoch == 0:
              print(f"Final FT-Transformer Training Epoch: {epoch+1}/{final_model_epochs}")
         run_epoch_ft(final_model, final_train_loader, final_loss_fn, final_opt, device=DEVICE)
         final_sched.step()
@@ -223,7 +221,7 @@ def train_and_evaluate_ft_transformer(
     print(f"Final FT-Transformer training done in {(time.time() - final_model_train_start_time):.2f} seconds.")
     final_model.eval()
 
-    # --- Evaluation on Test Set (Cell 5 logic) ---
+    # --- Evaluation on Test Set ---
     print("\n--- Evaluating Final FT-Transformer on Test Set ---")
     test_dataset = CatOnlyDataset(X_test_cat_np, y_test_np)
     test_loader = DataLoader(test_dataset, batch_size=best_hyperparams["batch_size"], shuffle=False)
@@ -233,17 +231,13 @@ def train_and_evaluate_ft_transformer(
         for x_cat_batch, y_batch in test_loader:
             logits_batch = final_model(None, x_cat_batch.to(DEVICE))
             all_logits.append(logits_batch.cpu())
-            all_labels.append(y_batch) # y_batch is already on CPU if dataloader doesn't move it
+            all_labels.append(y_batch)
             
     logits_np = torch.cat(all_logits).numpy()
     y_true_np = torch.cat(all_labels).numpy()
     y_pred_np = logits_np.argmax(1)
 
-    # --- Permutation Importance (Cell 6 logic, optional, can be slow) ---
-    # For now, let's skip direct integration of permutation importance in this main function
-    # It can be a separate utility or called conditionally.
-    # We will return the final model so it can be used for this if desired.
-
+    # --- Permutation Importance ---
     exp_time = time.time() - start_exp_time
     print(f"FT-Transformer Experiment took {exp_time/60:.2f} minutes.")
     print("---" * 20)
