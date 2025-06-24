@@ -155,8 +155,7 @@ def main():
         metrics_lr = get_classification_metrics(y_test_encoded, y_pred_lr, target_names=[str(c) for c in target_encoder.classes_])
         all_model_results.append({"model": model_name, **metrics_lr, "best_params": lr_model.get_params()})
         plot_confusion_matrix_custom(y_test_encoded, y_pred_lr, target_encoder.classes_, model_name, save_path=os.path.join(PLOTS_DIR, f"{model_name}_cm.png"))
-        # No standard feature_importances_ for LR like trees, but has coef_
-        # joblib.dump(lr_model, os.path.join(MODELS_DIR, f"{model_name}.joblib"))
+        
 
     # --- Random Forest ---
     if RUN_CONFIG["RandomForest"]["run"]:
@@ -223,7 +222,7 @@ def main():
             # tab_model.save_model(os.path.join(MODELS_DIR, f"{model_name}_model")) # Saves as a zip
 
     # --- MLP / EE-NN (using EmbeddingNN) ---
-    # You'll call train_and_evaluate_embedding_nn twice with different model_type_name and potentially different configs
+   
     nn_models_to_run = []
     if RUN_CONFIG["MLP"]["run"]: nn_models_to_run.append("MLP")
     if RUN_CONFIG["EE_NN"]["run"]: nn_models_to_run.append("EE_NN")
@@ -231,14 +230,12 @@ def main():
     for nn_model_type in nn_models_to_run:
         model_name = nn_model_type
         # Define specific hyperparam_configs_list for MLP and EE-NN based on your images
-        # For example, using the "Large" dataset best params from your image
+       
         if nn_model_type == "MLP":
-            # From your image: hidden_dim: 256, dropout: 0.2, lr: 0.0005, gamma: 1.0
             nn_config_list = [{'hidden_layers': [256], 'dropout': 0.2, 'lr': 0.0005, 'embedding_rule': 32}] # MLP might use fixed small embedding or no explicit embedding if features were OHE
             use_oversample = True # As per your notes
             use_class_w = True
         elif nn_model_type == "EE_NN":
-            # From your image: hidden_dim: 256, dropout: 0.2, lr: 0.0005, gamma: 1.0
             nn_config_list = [{'hidden_layers': [256], 'dropout': 0.2, 'lr': 0.0005, 'embedding_rule': 'default_rule'}]
             use_oversample = True
             use_class_w = True
