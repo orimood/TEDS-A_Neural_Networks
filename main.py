@@ -28,8 +28,23 @@ from src.modeling.deepfm_model import tune_and_train_deepfm
 # If SMOTE is used by more, it should be a utility.
 from imblearn.over_sampling import SMOTE # For DeepFM
 # The manual_oversample_nn is currently inside basic_nn_models.py, which is fine for now.
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report, accuracy_score, f1_score, ConfusionMatrixDisplay
+from sklearn.utils import resample
+from collections import Counter
+import os
+from datetime import datetime
 
-
+# --- Setup output directories ---
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+base_dir = f"results/eenn_{timestamp}"
+os.makedirs(base_dir, exist_ok=True)
 # --- 0. Global Configuration & Setup ---
 SEED = 42
 np.random.seed(SEED)
@@ -68,7 +83,6 @@ RUN_CONFIG = {
     "RandomForest":      {"run": True, "tune": True},
     "FTTransformer":     {"run": True, "tune": True}, # tune means run Optuna
     "TabNet":            {"run": True, "tune": True}, # tune means run its hyperparam search loop
-    "MLP":               {"run": True, "tune": True}, # tune means run its search_configs
     "EE_NN":             {"run": True, "tune": True}, # tune means run its search_configs
     "DeepFM":            {"run": True, "tune": True}  # tune means run Keras Tuner
 }
@@ -221,51 +235,144 @@ def main():
             # plot_feature_importance_custom(tab_model, original_feature_names, model_name + " (Tuned)")
             # tab_model.save_model(os.path.join(MODELS_DIR, f"{model_name}_model")) # Saves as a zip
 
-    # --- MLP / EE-NN (using EmbeddingNN) ---
+    # --- EE-NN (Deep Embedding Neural Network) -----------------------------------
+
+if RUN_CONFIG["EE_NN"]["run"]:
+    print("\n" + "="*20 + " Running EE-NN " + "="*20)
+df = pd.read_csv(CONFIG_CSV_PATH)
+df = df[CONFIG_INITIAL_COLS_MAIN]
+
+y_le = LabelEncoder()
+y = y_le.fit_transform(df["SUB1"])
+X = df.drop(columns=["SUB1"])
+
+enc_dict = {}
+for col in X.columns:
+    le = LabelEncoder()
+    X[col] = le.fit_transform(X[col].astype(str))
+    enc_dict[col] = le
+
+cat_dims = [len(le.classes_) for le in enc_dict.values()]
+
+# --- Step 2: Split data ---
+X_tmp, X_test, y_tmp, y_test = train_test_split(X, y, test_size=0.20, stratify=y, random_state=SEED)
+X_train, X_val, y_train, y_val = train_test_split(X_tmp, y_tmp, test_size=0.25, stratify=y_tmp, random_state=SEED)
+
+# Save splits
+pd.concat([X_train, pd.Series(y_train, name="SUB1")], axis=1).to_csv(os.path.join(base_dir, "train.csv"), index=False)
+pd.concat([X_val, pd.Series(y_val, name="SUB1")], axis=1).to_csv(os.path.join(base_dir, "val.csv"), index=False)
+pd.concat([X_test, pd.Series(y_test, name="SUB1")], axis=1).to_csv(os.path.join(base_dir, "test.csv"), index=False)
+
+# --- Step 3: Oversample training data ---
+def oversample(Xd, yd):
+    df_ = pd.concat([Xd.reset_index(drop=True), pd.Series(yd, name="label")], axis=1)
+    n_max = df_.label.value_counts().max()
+    return pd.concat([
+        resample(df_[df_.label == c], replace=True, n_samples=n_max, random_state=SEED)
+        for c in df_.label.unique()
+    ])
+
+train_os = oversample(X_train, y_train)
+X_train_os, y_train_os = train_os.drop(columns='label'), train_os.label
+
+# --- Step 4: Class weights ---
+class_counts = Counter(y_train_os)
+total = sum(class_counts.values())
+class_w = torch.tensor([total / (len(class_counts) * class_counts[i]) for i in range(len(class_counts))], dtype=torch.float32)
+
+# --- Step 5: Dataset class ---
+class CatDataset(Dataset):
+    def __init__(self, Xd, yd):
+        self.X = torch.tensor(Xd.values, dtype=torch.long)
+        self.y = torch.tensor(np.array(yd), dtype=torch.long)
+    def __len__(self): return len(self.X)
+    def __getitem__(self, i): return self.X[i], self.y[i]
+
+train_loader = DataLoader(CatDataset(X_train_os, y_train_os), batch_size=512, shuffle=True)
+val_loader   = DataLoader(CatDataset(X_val,      y_val),      batch_size=512)
+test_loader  = DataLoader(CatDataset(X_test,     y_test),     batch_size=512)
+
+# --- Step 6: Model ---
+class DeepEmbedNet(nn.Module):
+    def __init__(self, cat_dims, out_dim, hidden_layers, drop):
+        super().__init__()
+        emb_dims = [min(64, (d+1)//2) for d in cat_dims]
+        self.embs = nn.ModuleList([nn.Embedding(d, e) for d, e in zip(cat_dims, emb_dims)])
+        self.bn = nn.BatchNorm1d(sum(emb_dims))
+        self.dp_in = nn.Dropout(drop)
+        layers, last_dim = [], sum(emb_dims)
+        for h in hidden_layers:
+            layers.extend([nn.Linear(last_dim, h), nn.ReLU(), nn.Dropout(drop)])
+            last_dim = h
+        layers.append(nn.Linear(last_dim, out_dim))
+        self.mlp = nn.Sequential(*layers)
+    def forward(self, x):
+        z = torch.cat([e(x[:, i]) for i, e in enumerate(self.embs)], 1)
+        z = self.dp_in(self.bn(z))
+        return self.mlp(z)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+config = {"layers": [384, 256, 128], "drop": 0.1, "lr": 0.0003}
+with open(os.path.join(base_dir, "config.txt"), "w") as f:
+    f.write(str(config))
+
+# --- Step 7: Train loop ---
+best_f1, best_state = -1, None
+net = DeepEmbedNet(cat_dims, len(y_le.classes_), config["layers"], config["drop"]).to(device)
+loss_fn = nn.CrossEntropyLoss(weight=class_w.to(device))
+opt = torch.optim.AdamW(net.parameters(), lr=config["lr"])
+sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=20)
+
+for epoch in range(100):
+    net.train()
+    for xb, yb in train_loader:
+        xb, yb = xb.to(device), yb.to(device)
+        opt.zero_grad(); loss_fn(net(xb), yb).backward(); opt.step()
+    sched.step()
+
+    net.eval(); preds, true = [], []
+    with torch.no_grad():
+        for xb, yb in val_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            preds.extend(net(xb).argmax(1).cpu()); true.extend(yb.cpu())
+    f1 = f1_score(true, preds, average='macro')
+    print(f"Epoch {epoch+1:02d} | Validation macro-F1: {f1:.4f}")
+
+    if f1 > best_f1:
+        best_f1, best_state = f1, net.state_dict()
+    elif epoch >= 4 and f1 < best_f1:
+        break  # Early stop after 4 epochs without improvement
+
+# --- Step 8: Test evaluation ---
+net.load_state_dict(best_state); net.eval()
+preds, true = [], []
+with torch.no_grad():
+    for xb, yb in test_loader:
+        xb, yb = xb.to(device), yb.to(device)
+        preds.extend(net(xb).argmax(1).cpu()); true.extend(yb.cpu())
+
+y_true = y_le.inverse_transform(true)
+y_pred = y_le.inverse_transform(preds)
+
+# --- Step 9: Metrics ---
+report_dict = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+metrics_df = pd.DataFrame(report_dict).transpose()
+metrics_df["accuracy"] = accuracy_score(y_true, y_pred)
+metrics_df.to_csv(os.path.join(base_dir, "metrics.csv"))
+
+print("\nTest classification report:")
+print(metrics_df[["precision", "recall", "f1-score"]])
+print(f"\nTest Accuracy: {metrics_df['accuracy'].iloc[0]:.4f}")
+
+# --- Step 10: Confusion matrix ---
+ConfusionMatrixDisplay.from_predictions(y_true, y_pred, cmap='Blues', xticks_rotation=45)
+plt.title("Confusion Matrix – Test Set")
+plt.tight_layout(); plt.show()    
+
+    
+
    
-    nn_models_to_run = []
-    if RUN_CONFIG["MLP"]["run"]: nn_models_to_run.append("MLP")
-    if RUN_CONFIG["EE_NN"]["run"]: nn_models_to_run.append("EE_NN")
 
-    for nn_model_type in nn_models_to_run:
-        model_name = nn_model_type
-        # Define specific hyperparam_configs_list for MLP and EE-NN based on your images
-       
-        if nn_model_type == "MLP":
-            nn_config_list = [{'hidden_layers': [256], 'dropout': 0.2, 'lr': 0.0005, 'embedding_rule': 32}] # MLP might use fixed small embedding or no explicit embedding if features were OHE
-            use_oversample = True # As per your notes
-            use_class_w = True
-        elif nn_model_type == "EE_NN":
-            nn_config_list = [{'hidden_layers': [256], 'dropout': 0.2, 'lr': 0.0005, 'embedding_rule': 'default_rule'}]
-            use_oversample = True
-            use_class_w = True
-        else:
-            continue
-
-        # Determine if tuning (iterating multiple configs) or single run
-        should_tune_nn = RUN_CONFIG[nn_model_type]["tune"] and len(nn_config_list) > 1 # or pass a larger list for tuning
-
-        nn_model, nn_y_true, nn_y_pred, nn_best_cfg = train_and_evaluate_embedding_nn(
-            X_train_final, y_train_final, X_val_final, y_val_final, X_test_processed, y_test_encoded,
-            cat_dims_list=cat_cardinalities,
-            num_target_classes=num_target_classes,
-            target_encoder_classes_str=target_encoder.classes_,
-            original_feature_names=original_feature_names,
-            model_type_name=model_name,
-            seed=SEED,
-            hyperparam_configs_list=nn_config_list,
-            max_search_trials= 1 if not should_tune_nn else len(nn_config_list), # Run all if tuning, else 1
-            epochs_per_trial=15, # From your image
-            patience_early_stop=4,
-            batch_size_nn=64,    # From your image
-            use_manual_oversampling=use_oversample,
-            use_class_weights_loss=use_class_w
-        )
-        if nn_y_true is not None:
-            metrics_nn_main = get_classification_metrics(nn_y_true, nn_y_pred, target_names=[str(c) for c in target_encoder.classes_])
-            all_model_results.append({"model": model_name + " (Best Config)", **metrics_nn_main, "best_params": nn_best_cfg})
-            plot_confusion_matrix_custom(nn_y_true, nn_y_pred, target_encoder.classes_, model_name + " (Best Config)", save_path=os.path.join(PLOTS_DIR, f"{model_name}_cm.png"))
-            # torch.save(nn_model.state_dict(), os.path.join(MODELS_DIR, f"{model_name}.pt"))
             
     # --- DeepFM ---
     if RUN_CONFIG["DeepFM"]["run"]:
