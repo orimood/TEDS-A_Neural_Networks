@@ -1,0 +1,4 @@
+Model,Macro-F1,Accuracy
+Embedding MLP,0.545241802,0.551275592
+Logistic Regression,0.374846899,0.511592085
+Random Forest,0.421118641,0.53869143
