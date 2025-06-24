@@ -93,7 +93,6 @@ The following machine learning models were implemented and compared:
 * Logistic Regression
 * Random Forest
 * LightGBM
-* Multi-Layer Perceptron (MLP) with Embeddings
 * Entity Embedding Neural Network (EE-NN)
 * TabNet
 * FT-Transformer
